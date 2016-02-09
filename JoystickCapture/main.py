@@ -49,6 +49,8 @@ INSTRUCTION_START_BYTE="I"
 INSTRUCTION_SET_START_BYTE="T" # Chosen because I'm running out of bytes
 COMMAND_END_BYTE=","
 
+AXIS_VAL_TOLERANCE = 10 #0.010
+
 # Think of all the buttons we can support with this! :D
 BUTTON_ID=0x1000
 AXIS_ID=0x2000
@@ -60,21 +62,23 @@ def buildInstructionSet(data):
     instruction_set = []
     for instr in data:
         instruction = "" # Should be a string of bytes NOTHING ELSE SHOULD BE IN THIS
-        for com in instr:
-            t = type(com)
+        instruction += long_to_bytes(instr[0])+"," # Instruction type
+        #for com in instr:
+        for i in range(1,len(instr)): # Skip first instruction
+            #t = type(com)
             fcom = com
-            if(t == float or t == int):
-                # Keep first 3 decimal places
-                # Do the same with ints, so that we just divide all by 1000 regardless
-                # now we don't need to worry about the type
-                fcom = int(1000*com)
+            #if(t == float or t == int):
+            # Keep first 3 decimal places
+            # Do the same with ints, so that we just divide all by 1000 regardless
+            # now we don't need to worry about the type
+            fcom = int(1000*com)
 
-                # Meduka
-                # What is it Coobie?
-                # Become Meguca
-                fcom = long_to_bytes(fcom)
-            fcom += COMMAND_END_BYTE
-            instruction += fcom
+            # Meduka
+            # What is it Coobie?
+            # Become Meguca
+            #fcom = long_to_bytes(fcom)
+            #fcom += COMMAND_END_BYTE
+            instruction += long_to_bytes(fcom)+COMMAND_END_BYTE
         instruction_set.append(instruction)
     return instruction_set
 
@@ -105,6 +109,22 @@ def writeJoystickFile(filename,data,overwriteIfExists=False):
     f = open(filename,'wb')
     f.write(all_data)
     f.close()
+
+def convertDataToInstructions(axisVals,buttonVals):
+    totalInstructions=[]
+    for i in range(len(axisVals)):
+        for instr in axisVals[i]:
+            totalInstructions.append(long_to_bytes(AXIS_MASK|i) + "," + long_to_bytes(instr[0]*1000)+","+long_to_bytes(instr[1]*1000))
+    last_time = 0
+    for i in range(len(buttonVals)):
+        for instr in buttonVals[i]:
+            val = instr[0]
+            if(val == False and last_val == True):
+                t = instr[1]
+                totalInstructions.append(long_to_bytes(BUTTON_MASK|i)+","+long_to_bytes(t-last_time))
+                last_val = val
+                last_time = t
+    return totalInstructions
 
 class TimerRecorder(Timer.Timer):
     def __init__(self):
@@ -139,6 +159,9 @@ class JoystickCapture(IterativeLoop.IterativeLoop):
         self.axislists = []
         self.buttontimes = []
 
+        self.axisVals = []
+        self.buttonVals = []
+
     def Init(self):
         self.getScreen().Init("./JoystickCapture.cfg")
         self.tolerance = self.getScreen().settings.getOption("Tolerance")
@@ -153,6 +176,7 @@ class JoystickCapture(IterativeLoop.IterativeLoop):
             self.getScreen().addToQueue(self.buttonTexts[i])
 
             self.buttontimes.append([])
+            self.buttonVals.append([]) # One array for each button
 
         for i in range(self.joy.get_numaxes()):
             self.axisTexts.append(Text.Text("Axis%d="%i,color=(255,255,255,255)))
@@ -161,34 +185,45 @@ class JoystickCapture(IterativeLoop.IterativeLoop):
             self.getScreen().addToQueue(self.axisTexts[i])
 
             self.axislists.append([])
+            self.axisVals.append([]) # One array for each axis
 
 
-        self.timing_start = self.getScreen().getClock().get_rawtime()
+        self.timing_start = self.getScreen().clock.get_rawtime()
         self.last_time = 0.0
 
     def Execute(self):
+        curr_time = self.getScreen().clock.get_rawtime()
         for i in range(self.joy.get_numbuttons()):
             val = int(self.joy.get_button(i))
+            if(val != self.buttonVals[i][0]): # Is the value different?
+                self.buttonVals[i].append([val,curr_time)
 
+            # This code section is out of date, but I'm not deleting it just yet.
             # Only add a value if it hasn't already been added
             # Basically, alternate
             if val:
-                if(self.buttonsTexts[i].getString() == "Button%d=0"%i):
-                    self.buttontimes[i].append(self.getScreen().getClock())
+                if(self.buttonTexts[i].getString() == "Button%d=0"%i):
+                    self.buttontimes[i].append(self.getScreen().clock.get_rawtime())
             else:
                 if(self.buttonTexts[i].getString() == "Button%d=1"%i):
-                    self.buttontimes[i].append(self.getScreen().getClock())
+                    self.buttontimes[i].append(self.getScreen().clock.get_rawtime())
 
             self.buttonTexts[i].setString("Button%d=%d"%(i,val))
+        for i in range(self.joy.get_numaxes()):
+            val = int(self.joy.get_axis(i)*1000)/1000.0
+            old_val = self.axisVals[i][len(self.axisVals[i])][0]
+            # Is the value sufficiently different
+            if(old_val-val > AXIS_VAL_TOLERANCE):
+                self.axisVals[i].append([val,curr_time])
 
         # Only update the axes every half a second
-        if(int((self.getScreen().getClock().get_rawtime() - self.last_time)*10)/10.0 > 0.5):
-            self.last_time = self.getScreen().getClock().get_rawtime()
+        if(int((self.getScreen().clock.get_rawtime() - self.last_time)*10)/10.0 > 0.5):
+            self.last_time = self.getScreen().clock.get_rawtime()
             for i in range(self.joy.get_numaxes()):
                 val = self.joy.get_axis(i)
                 self.axisTexts[i].setString("Axis%d="%(i)+str(val))
                 # Record the current joystick value
-                axislists[i].append(val)
+                self.axislists[i].append(val)
 
     def IsFinished(self):
         return self.board.getKeyOnce(pygame.K_ESCAPE) or pygame.event.peek(pygame.QUIT)
@@ -196,20 +231,25 @@ class JoystickCapture(IterativeLoop.IterativeLoop):
     def End(self):
         # Make sure we have an end time as well
         if(len(self.buttontimes)%2 != 0):
-            self.buttontimes.append(self.getScreen().getClock().get_rawtime())
+            self.buttontimes.append(self.getScreen().clock.get_rawtime())
 
         # Turn the arrays into an array of [[ID,time],[ID,time],etc...]
         final_button_data = []
-        for i in range(len(self.buttontimes)):
-            for t in self.buttontimes[i]:
-                # BIT SHIFTING! :D
-                bid = BUTTON_ID|i
-                final_button_data.append([bid,t])
+        for i in range(len(self.buttonVals)):
+            last_time = self.getScreen().clock.get_rawtime()
+            last_val = False
+            for t in self.buttonVals[i]:
+                if(t[0] == True and last_val == False):
+                    # BIT SHIFTING! :D
+                    bid = BUTTON_ID|i
+                    final_button_data.append([bid,t[1]-last_time])
+        print final_button_data
 
         final_axis_data = []
-        for i in range(len(self.axislists)):
+        for i in range(len(self.axisVals)):
             aid = AXIS_ID|i
-            final_axis_data.append([aid,self.axislists[i]])
+            final_axis_data.append([aid,self.axisVals[i][0],self.axisVals[i][1]])
+        print final_axis_data
 
         # Combine the two sets of data and sort them
         final_total_data = sorted(final_axis_data+final_button_data)
@@ -217,5 +257,6 @@ class JoystickCapture(IterativeLoop.IterativeLoop):
         # Finally, write the joystick data to a file
         writeJoystickFile(os.path.join(self.default_save_dir,"test1.joy"),final_total_data,True)
 
+#if __name__ == "__main__":
 START_WITHOUT_ERROR_HANDLING(JoystickCapture)
 
